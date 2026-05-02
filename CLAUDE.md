@@ -110,12 +110,16 @@ O comando `watch` (chamado pelo systemd, não pelo usuário diretamente) é o da
 
 1. Lê `links.toml` — se não existir, trata como lista vazia e encerra sem erro
 2. Para cada entrada (filtrada por tag, se passada):
-   - Se symlink já existe e aponta pro lugar certo: loga `[OK]` e pula
-   - Se o `target` no repo não existe: loga `[MISSING]` e pula (não cria link quebrado)
+   - Se symlink já existe e aponta pro lugar certo: registra `[OK]` e pula
+   - Se o `target` no repo não existe: registra `[MISSING]` e pula (não cria link quebrado)
    - Cria o diretório pai do `source` se não existir (`os.makedirs(..., exist_ok=True)`)
-   - Se existe algo no lugar (arquivo real, symlink errado): pergunta se sobrescreve (exceto em modo `--force`, usado pelo `init --clone`)
-   - Se não existe: cria o symlink
-3. Totalmente idempotente — rodar duas vezes não quebra nada
+   - Se existe um **diretório real** no lugar: registra em `dir_conflicts` e pula — **sempre**, independente de `--force`. `cli.py` prompta o usuário (`delete this folder? [y/N]`); `watcher.py` loga e ignora
+   - Se existe um **arquivo ou symlink** no lugar:
+     - Sem `--force`: registra em `file_conflicts` e pula
+     - Com `--force`: remove e cria o symlink
+   - Se não existe nada: cria o symlink
+3. Retorna `RestoreResult(ok, missing, created, file_conflicts, dir_conflicts)`
+4. Totalmente idempotente — rodar duas vezes não quebra nada
 
 Casos de uso:
 - **Máquina nova**: chamado automaticamente pelo `init --clone` em modo `--force`
@@ -124,12 +128,14 @@ Casos de uso:
 
 ## Fluxo do comando `unlink`
 
-1. Verifica se o `source` é um symlink gerenciado (está no manifesto) — erro claro se não estiver
-2. Remove o symlink
-3. Move o arquivo do repo de volta para o `source` original
-4. Remove a entrada do `links.toml`
-5. Remove o arquivo do repo: `git rm <target>`
-6. `git add links.toml && git commit -m "unlink: <target>" && git push`
+1. Verifica se o `source` está no manifesto — erro claro se não estiver
+2. Verifica se existe algo no `source` que não seja symlink — erro claro se sim (intervenção manual necessária)
+3. Remove o symlink (se existir)
+4. Move o arquivo do repo de volta para o `source` original
+   - Se o `target` não existir no repo: limpa o manifesto e avisa o usuário, sem erro. `cli.py` não deve executar `git rm` neste caso (`remove_link` retorna `(target, existed=False)`)
+5. Remove a entrada do `links.toml`
+6. Se `existed=True`: `git rm <target> && git add links.toml && git commit -m "unlink: <target>" && git push`
+7. Se `existed=False`: `git add links.toml && git commit -m "unlink: <target>" && git push`
 
 O `unlink` propaga para todas as máquinas: na próxima execução do watcher delas, o `git pull` remove o arquivo do repo local. Os symlinks das outras máquinas ficam quebrados até que o usuário rode `dotfiles restore` nelas — o `status` deve exibir isso como `[BROKEN]`.
 
@@ -211,7 +217,7 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - `config.py` e `manifest.py` são os únicos que tocam em arquivos TOML
 - `git.py` é o único que chama `subprocess` com comandos git
 - Sem variáveis globais de estado — configuração é passada como argumento
-- Todos os caminhos passam por `os.path.expanduser()` e `os.path.abspath()` antes de qualquer operação
+- Paths de `source` usam apenas `Path(path).expanduser()` — **sem** `.resolve()`. `.resolve()` segue symlinks e retorna o arquivo dentro do repo em vez do path lógico do symlink, quebrando toda comparação posterior. O manifesto armazena sempre o path do symlink, não do destino.
 - Se `config.toml` não existir ao executar qualquer comando, o erro deve ser orientador: `"config not found — run 'dotfiles init' first"`
 - Testes ficam em `tests/` espelhando a estrutura de `dotfiles/`
 - Comandos de teste: `python -m pytest tests/`

@@ -32,7 +32,7 @@ def load(repo: Path) -> list[Link]:
 
     return [
         Link(
-            source=str(Path(entry["source"]).expanduser().resolve()),
+            source=str(Path(entry["source"]).expanduser()),
             target=entry["target"],
             tags=entry.get("tags", []),
         )
@@ -59,7 +59,7 @@ def add(repo: Path, link: Link) -> None:
 
 
 def remove(repo: Path, source: str) -> None:
-    normalized = str(Path(source).expanduser().resolve())
+    normalized = str(Path(source).expanduser())
     links = load(repo)
     filtered = [l for l in links if l.source != normalized]
     if len(filtered) == len(links):
