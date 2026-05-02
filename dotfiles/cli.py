@@ -6,7 +6,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from dotfiles import config, git, linker, manifest
+from dotfiles import config, git, linker, manifest, watcher
 
 _STATE_DIR = Path("~/.config/dotfiles-cli").expanduser()
 
@@ -137,8 +137,11 @@ def cmd_status(args: argparse.Namespace, cfg: config.Config) -> None:
     print(f"watcher: {_watcher_status()}")
 
 
-def cmd_watch(_args: argparse.Namespace) -> None:
-    print("not implemented")
+def cmd_watch(_args: argparse.Namespace, cfg: config.Config) -> None:
+    try:
+        watcher.start(cfg)
+    except RuntimeError as e:
+        _die(str(e))
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -170,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
 
     parsed = parser.parse_args(argv)
 
-    if parsed.command in ("add", "unlink", "restore", "status"):
+    if parsed.command in ("add", "unlink", "restore", "status", "watch"):
         cfg = _load_config()
 
     if parsed.command == "add":
@@ -182,7 +185,7 @@ def main(argv: list[str] | None = None) -> None:
     elif parsed.command == "status":
         cmd_status(parsed, cfg)
     elif parsed.command == "watch":
-        cmd_watch(parsed)
+        cmd_watch(parsed, cfg)
     elif parsed.command == "init":
         cmd_init(parsed)
 

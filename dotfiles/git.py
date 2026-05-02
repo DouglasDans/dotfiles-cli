@@ -30,3 +30,12 @@ def pull(repo: Path) -> None:
 
 def rm(repo: Path, path: str) -> None:
     _run(["git", "rm", path], cwd=repo)
+
+
+def head_hash(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise GitError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout.strip()

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from dotfiles.git import GitError, add, commit, push, pull, rm
+from dotfiles.git import GitError, add, commit, push, pull, rm, head_hash
 
 
 def _setup_repo(path: Path) -> None:
@@ -141,3 +141,21 @@ def test_rm_raises_git_error_for_untracked_file(local_repo):
 
     with pytest.raises(GitError):
         rm(local_repo, "untracked.txt")
+
+
+# --- head_hash ---
+
+def test_head_hash_returns_short_hash(local_repo):
+    _commit_file(local_repo, "foo.txt")
+
+    result = head_hash(local_repo)
+
+    assert len(result) >= 7
+    assert result.isalnum()
+
+
+def test_head_hash_raises_on_empty_repo(tmp_path):
+    _setup_repo(tmp_path)
+
+    with pytest.raises(GitError):
+        head_hash(tmp_path)
