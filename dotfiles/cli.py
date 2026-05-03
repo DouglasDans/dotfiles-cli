@@ -116,7 +116,7 @@ def cmd_restore(args: argparse.Namespace, cfg: config.Config) -> None:
     print(", ".join(parts) if parts else "nothing to do")
 
 
-def cmd_status(args: argparse.Namespace, cfg: config.Config) -> None:
+def cmd_status(_args: argparse.Namespace, cfg: config.Config) -> None:
     repo = Path(cfg.repo)
     links = manifest.load(repo)
 
