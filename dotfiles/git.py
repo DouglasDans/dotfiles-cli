@@ -29,7 +29,7 @@ def pull(repo: Path) -> None:
 
 
 def rm(repo: Path, path: str) -> None:
-    _run(["git", "rm", path], cwd=repo)
+    _run(["git", "rm", "-r", path], cwd=repo)
 
 
 def clone(url: str, dest: Path) -> None:
