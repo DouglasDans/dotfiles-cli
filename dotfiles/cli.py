@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import getpass
 import os
 import shutil
 import subprocess
-import sys
 import tomllib
-from pathlib import Path
 
 from dotfiles import config, git, linker, manifest, watcher
 
@@ -189,7 +192,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="dotfiles", description="Manage dotfiles via symlinks")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p_add = sub.add_parser("add", help="Add a file to the dotfiles repo")
     p_add.add_argument("path")
@@ -211,6 +214,10 @@ def main(argv: list[str] | None = None) -> None:
     init_group.add_argument("--clone", metavar="URL")
 
     parsed = parser.parse_args(argv)
+
+    if parsed.command is None:
+        parser.print_help()
+        sys.exit(0)
 
     if parsed.command in ("add", "unlink", "restore", "status", "watch"):
         cfg = _load_config()

@@ -66,6 +66,7 @@ What happens: the file moves into the repo, a symlink is created at the original
 ```bash
 dotfiles restore
 dotfiles restore --tag editor   # only entries with that tag
+dotfiles restore --force        # overwrite existing files (used automatically by init --clone)
 ```
 
 Idempotent — safe to run multiple times.
@@ -145,9 +146,8 @@ dotfiles add ~/.config/alacritty
 # Edit normally — watcher handles the rest
 nvim ~/.config/alacritty/alacritty.toml
 
-# New machine
+# New machine — restore runs automatically after clone
 dotfiles init --clone git@github.com:you/dotfiles.git
-dotfiles restore
 ```
 
 ## License
