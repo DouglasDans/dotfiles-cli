@@ -79,6 +79,7 @@ class _DotfilesEventHandler(FileSystemEventHandler):
         self._timer: threading.Timer | None = None
         self._pending: set[str] = set()
         self._lock = threading.Lock()
+        self._git_lock = threading.Lock()
 
     def on_any_event(self, event) -> None:
         if event.is_directory:
@@ -93,6 +94,26 @@ class _DotfilesEventHandler(FileSystemEventHandler):
             self._timer = threading.Timer(self._debounce_seconds, self._flush)
             self._timer.daemon = True
             self._timer.start()
+
+    def _sync(self) -> None:
+        repo = self._repo
+        if _is_rebase_in_progress(repo):
+            _log("rebase in progress — skipping sync")
+            return
+
+        links_toml_hash_before = _links_toml_hash(repo)
+
+        with self._git_lock:
+            try:
+                git.pull(repo)
+            except git.GitError as e:
+                _log(f"sync pull failed: {e}")
+                _write_state({"last_error": str(e), "last_error_at": _now()})
+                return
+
+        links_toml_hash_after = _links_toml_hash(repo)
+        if links_toml_hash_before != links_toml_hash_after:
+            linker.restore(repo, force=False)
 
     def _flush(self) -> None:
         with self._lock:
@@ -111,40 +132,41 @@ class _DotfilesEventHandler(FileSystemEventHandler):
 
         links_toml_hash_before = _links_toml_hash(repo)
 
-        try:
-            git.pull(repo)
-        except git.GitError as e:
-            _log(f"pull failed: {e}")
-            _write_state({"last_error": str(e), "last_error_at": _now()})
-            return
-
-        links_toml_hash_after = _links_toml_hash(repo)
-        links_toml_updated_by_pull = links_toml_hash_before != links_toml_hash_after
-
-        relative_paths: list[str] = []
-        for p in paths:
+        with self._git_lock:
             try:
-                relative_paths.append(str(Path(p).relative_to(repo)))
-            except ValueError:
-                pass
-
-        if relative_paths:
-            try:
-                git.add(repo, relative_paths)
-                git.commit(repo, f"auto: {', '.join(relative_paths)}")
-                git.push(repo)
+                git.pull(repo)
             except git.GitError as e:
-                _log(f"commit/push failed: {e}")
+                _log(f"pull failed: {e}")
                 _write_state({"last_error": str(e), "last_error_at": _now()})
                 return
 
-            try:
-                commit_hash = git.head_hash(repo)
-            except git.GitError:
-                commit_hash = "unknown"
+            links_toml_hash_after = _links_toml_hash(repo)
+            links_toml_updated_by_pull = links_toml_hash_before != links_toml_hash_after
 
-            _write_state({"last_commit": commit_hash, "last_commit_at": _now()})
-            _log(f"pushed {len(relative_paths)} change(s)")
+            relative_paths: list[str] = []
+            for p in paths:
+                try:
+                    relative_paths.append(str(Path(p).relative_to(repo)))
+                except ValueError:
+                    pass
+
+            if relative_paths:
+                try:
+                    git.add(repo, relative_paths)
+                    git.commit(repo, f"auto: {', '.join(relative_paths)}")
+                    git.push(repo)
+                except git.GitError as e:
+                    _log(f"commit/push failed: {e}")
+                    _write_state({"last_error": str(e), "last_error_at": _now()})
+                    return
+
+                try:
+                    commit_hash = git.head_hash(repo)
+                except git.GitError:
+                    commit_hash = "unknown"
+
+                _write_state({"last_commit": commit_hash, "last_commit_at": _now()})
+                _log(f"pushed {len(relative_paths)} change(s)")
 
         links_toml_in_paths = str(repo / "links.toml") in paths
         if links_toml_in_paths or links_toml_updated_by_pull:
@@ -152,8 +174,6 @@ class _DotfilesEventHandler(FileSystemEventHandler):
 
 
 def start(cfg) -> None:
-    from dotfiles import config as cfg_module
-
     repo = Path(cfg.repo)
     pid_file = _PID_FILE
 
@@ -167,6 +187,15 @@ def start(cfg) -> None:
     signal.signal(signal.SIGINT, _cleanup)
 
     handler = _DotfilesEventHandler(repo, cfg.debounce_seconds)
+
+    def _schedule_sync() -> None:
+        handler._sync()
+        t = threading.Timer(cfg.sync_interval_seconds, _schedule_sync)
+        t.daemon = True
+        t.start()
+
+    _schedule_sync()
+
     observer = Observer()
     observer.schedule(handler, str(repo), recursive=True)
     observer.start()

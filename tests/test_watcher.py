@@ -220,6 +220,34 @@ class TestFlush:
 
         mock_restore.assert_called_once_with(repo, force=False)
 
+    def test_flush_acquires_git_lock(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        changed = repo / "zsh" / ".zshrc"
+        changed.parent.mkdir()
+        changed.write_text("content")
+
+        handler = self._make_handler(repo)
+        handler._pending = {str(changed)}
+
+        acquired = []
+
+        original_pull = git.pull
+        def fake_pull(r):
+            acquired.append(handler._git_lock.locked())
+
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull", side_effect=fake_pull), \
+             patch.object(git, "add"), \
+             patch.object(git, "commit"), \
+             patch.object(git, "push"), \
+             patch.object(git, "head_hash", return_value="abc"), \
+             patch.object(watcher, "_write_state"), \
+             patch.object(watcher, "_log"):
+            handler._flush()
+
+        assert acquired == [True]
+
     def test_no_restore_when_links_toml_unchanged(self, tmp_path):
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -242,3 +270,79 @@ class TestFlush:
             handler._flush()
 
         mock_restore.assert_not_called()
+
+
+# --- _sync ---
+
+class TestSync:
+    def _make_handler(self, repo: Path) -> watcher._DotfilesEventHandler:
+        return watcher._DotfilesEventHandler(repo, debounce_seconds=1)
+
+    def test_pulls_on_call(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull") as mock_pull, \
+             patch.object(watcher, "_log"):
+            handler._sync()
+        mock_pull.assert_called_once_with(tmp_path)
+
+    def test_skips_when_rebase_in_progress(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=True), \
+             patch.object(git, "pull") as mock_pull, \
+             patch.object(watcher, "_log") as mock_log:
+            handler._sync()
+        mock_pull.assert_not_called()
+        mock_log.assert_called_once_with("rebase in progress — skipping sync")
+
+    def test_writes_error_on_pull_failure(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull", side_effect=git.GitError("timeout")), \
+             patch.object(watcher, "_write_state") as mock_write, \
+             patch.object(watcher, "_log"):
+            handler._sync()
+        updates = mock_write.call_args[0][0]
+        assert "last_error" in updates
+        assert "last_error_at" in updates
+
+    def test_restore_when_links_toml_updated_by_pull(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        links_toml = repo / "links.toml"
+
+        def fake_pull(_repo):
+            links_toml.write_text("[[links]]")
+
+        handler = self._make_handler(repo)
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull", side_effect=fake_pull), \
+             patch.object(watcher, "_log"), \
+             patch("dotfiles.watcher.linker.restore") as mock_restore:
+            handler._sync()
+        mock_restore.assert_called_once_with(repo, force=False)
+
+    def test_no_restore_when_links_toml_unchanged(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        handler = self._make_handler(repo)
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull"), \
+             patch.object(watcher, "_log"), \
+             patch("dotfiles.watcher.linker.restore") as mock_restore:
+            handler._sync()
+        mock_restore.assert_not_called()
+
+    def test_sync_acquires_git_lock(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        acquired = []
+
+        def fake_pull(r):
+            acquired.append(handler._git_lock.locked())
+
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "pull", side_effect=fake_pull), \
+             patch.object(watcher, "_log"):
+            handler._sync()
+
+        assert acquired == [True]
