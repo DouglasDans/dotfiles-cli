@@ -58,7 +58,7 @@ def cmd_add(args: argparse.Namespace, cfg: config.Config) -> None:
     target = raw if raw else suggested
 
     try:
-        linker.add_link(args.path, repo, target)
+        linker.add_link(args.path, repo, target, tags=args.tag or [])
         git.add(repo, [target, "links.toml"])
         git.commit(repo, f"add: {target}")
         git.push(repo)
@@ -191,27 +191,58 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="dotfiles", description="Manage dotfiles via symlinks")
+    epilog = (
+        "examples:\n"
+        "  dotfiles init --repo ~/dotfiles\n"
+        "  dotfiles init --clone git@github.com:you/dotfiles.git\n"
+        "  dotfiles add ~/.zshrc --tag shell\n"
+        "  dotfiles add ~/.config/nvim --tag editor\n"
+        "  dotfiles restore --tag shell\n"
+        "  dotfiles status\n"
+        "  dotfiles unlink ~/.zshrc\n"
+    )
+    parser = argparse.ArgumentParser(
+        prog="dotfiles",
+        description="Manage dotfiles via symlinks and Git.",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command")
 
-    p_add = sub.add_parser("add", help="Add a file to the dotfiles repo")
-    p_add.add_argument("path")
+    p_add = sub.add_parser("add", help="Track a file or directory")
+    p_add.add_argument("path", metavar="PATH", help="file or directory to track")
+    p_add.add_argument(
+        "--tag", action="append", metavar="TAG",
+        help="tag to assign (can be repeated, e.g. --tag shell --tag work)",
+    )
 
-    p_unlink = sub.add_parser("unlink", help="Remove a file from the dotfiles repo")
-    p_unlink.add_argument("path")
+    p_unlink = sub.add_parser("unlink", help="Stop tracking a file or directory")
+    p_unlink.add_argument("path", metavar="PATH", help="file or directory to stop tracking")
 
     p_restore = sub.add_parser("restore", help="Recreate symlinks from the manifest")
-    p_restore.add_argument("--tag", action="append", metavar="TAG")
-    p_restore.add_argument("--force", action="store_true")
+    p_restore.add_argument(
+        "--tag", action="append", metavar="TAG",
+        help="only restore entries with this tag (can be repeated)",
+    )
+    p_restore.add_argument(
+        "--force", action="store_true",
+        help="overwrite existing files at source paths",
+    )
 
     sub.add_parser("status", help="Show link status and watcher state")
 
-    sub.add_parser("watch", help="Run the filesystem watcher daemon")
+    sub.add_parser(
+        "watch",
+        help="Run the filesystem watcher daemon (called by the systemd service)",
+    )
 
-    p_init = sub.add_parser("init", help="Configure and initialize dotfiles")
+    p_init = sub.add_parser("init", help="Configure CLI and install the systemd service")
     init_group = p_init.add_mutually_exclusive_group(required=True)
-    init_group.add_argument("--repo", metavar="PATH")
-    init_group.add_argument("--clone", metavar="URL")
+    init_group.add_argument("--repo", metavar="PATH", help="path to an existing local dotfiles repo")
+    init_group.add_argument(
+        "--clone", metavar="URL",
+        help="git URL to clone (destination: ~/dotfiles by default)",
+    )
 
     parsed = parser.parse_args(argv)
 

@@ -18,7 +18,7 @@ def suggest_target(source: str) -> str:
     return Path(source).expanduser().name
 
 
-def add_link(source: str, repo: Path, target: str) -> None:
+def add_link(source: str, repo: Path, target: str, tags: list[str] | None = None) -> None:
     source_path = Path(source).expanduser()
     target_path = Path(repo) / target
 
@@ -47,7 +47,7 @@ def add_link(source: str, repo: Path, target: str) -> None:
         shutil.move(str(target_path), str(source_path))
         raise
 
-    manifest.add(repo, manifest.Link(source=str(source_path), target=target, tags=[]))
+    manifest.add(repo, manifest.Link(source=str(source_path), target=target, tags=tags or []))
 
 
 def remove_link(source: str, repo: Path) -> tuple[str, bool]:

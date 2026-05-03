@@ -25,7 +25,7 @@ def test_add_accepts_suggested_target_on_empty_input():
          patch("dotfiles.cli.git.push"), \
          patch("builtins.input", return_value=""):
         run(["add", "~/.zshrc"])
-    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), ".zshrc")
+    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), ".zshrc", tags=[])
 
 
 def test_add_uses_user_provided_target():
@@ -36,7 +36,7 @@ def test_add_uses_user_provided_target():
          patch("dotfiles.cli.git.push"), \
          patch("builtins.input", return_value="shell/zshrc"):
         run(["add", "~/.zshrc"])
-    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), "shell/zshrc")
+    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), "shell/zshrc", tags=[])
 
 
 def test_add_commits_target_and_manifest():

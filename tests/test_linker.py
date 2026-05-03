@@ -104,6 +104,13 @@ def test_add_link_registers_in_manifest(repo, source_file):
     assert links[0].target == "zsh/.zshrc"
 
 
+def test_add_link_stores_tags_in_manifest(repo, source_file):
+    add_link(str(source_file), repo, "zsh/.zshrc", tags=["shell", "work"])
+
+    links = manifest.load(repo)
+    assert links[0].tags == ["shell", "work"]
+
+
 def test_add_link_rollback_moves_file_back_on_symlink_failure(repo, source_file):
     with patch.object(Path, "symlink_to", side_effect=OSError("permission denied")):
         with pytest.raises(OSError):
