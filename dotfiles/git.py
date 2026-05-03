@@ -32,6 +32,11 @@ def rm(repo: Path, path: str) -> None:
     _run(["git", "rm", path], cwd=repo)
 
 
+def clone(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run(["git", "clone", url, str(dest)], cwd=dest.parent)
+
+
 def head_hash(repo: Path) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import getpass
 import os
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -9,6 +11,8 @@ from pathlib import Path
 from dotfiles import config, git, linker, manifest, watcher
 
 _STATE_DIR = Path("~/.config/dotfiles-cli").expanduser()
+_TEMPLATE_PATH = Path(__file__).parent.parent / "systemd" / "dotfiles-watch.service.template"
+_SERVICE_DIR = Path("~/.config/systemd/user").expanduser()
 
 
 def _die(msg: str) -> None:
@@ -144,8 +148,43 @@ def cmd_watch(_args: argparse.Namespace, cfg: config.Config) -> None:
         _die(str(e))
 
 
+def _install_service() -> None:
+    user = getpass.getuser()
+    content = _TEMPLATE_PATH.read_text().replace("{user}", user)
+    _SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+    (_SERVICE_DIR / "dotfiles-watch.service").write_text(content)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "--now", "dotfiles-watch"], check=True)
+
+
 def cmd_init(args: argparse.Namespace) -> None:
-    print("not implemented")
+    if args.repo:
+        repo = Path(args.repo).expanduser().resolve()
+        if not repo.is_dir():
+            _die(f"{args.repo!r} does not exist")
+        if not (repo / ".git").exists():
+            _die(f"{args.repo!r} is not a git repository")
+    else:
+        raw = input("Clone destination [~/dotfiles]: ").strip()
+        dest = Path(raw if raw else "~/dotfiles").expanduser()
+        try:
+            git.clone(args.clone, dest)
+        except git.GitError as e:
+            _die(str(e))
+        repo = dest
+
+    cfg = config.Config(repo=str(repo))
+    config.save(cfg)
+
+    try:
+        _install_service()
+    except Exception as e:
+        _die(f"failed to install systemd service: {e}")
+
+    if args.clone:
+        linker.restore(repo, force=True)
+
+    print(f"initialized: {repo}")
 
 
 def main(argv: list[str] | None = None) -> None:

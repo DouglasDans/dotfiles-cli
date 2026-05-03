@@ -268,3 +268,130 @@ def test_status_watcher_running_with_active_pid(tmp_path, capsys):
         run(["status"])
 
     assert "running" in capsys.readouterr().out.lower()
+
+
+# --- init --repo ---
+
+def test_init_repo_path_not_exist_exits_1(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        run(["init", "--repo", str(tmp_path / "nonexistent")])
+    assert exc.value.code == 1
+
+
+def test_init_repo_not_a_git_repo_exits_1(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        run(["init", "--repo", str(tmp_path)])
+    assert exc.value.code == 1
+
+
+def test_init_repo_saves_config(tmp_path):
+    repo = tmp_path / "dotfiles"
+    (repo / ".git").mkdir(parents=True)
+    with patch("dotfiles.cli.config.save") as mock_save, \
+         patch("dotfiles.cli._install_service"):
+        run(["init", "--repo", str(repo)])
+    mock_save.assert_called_once()
+    assert str(repo) in mock_save.call_args[0][0].repo
+
+
+def test_init_repo_installs_service(tmp_path):
+    repo = tmp_path / "dotfiles"
+    (repo / ".git").mkdir(parents=True)
+    with patch("dotfiles.cli.config.save"), \
+         patch("dotfiles.cli._install_service") as mock_install:
+        run(["init", "--repo", str(repo)])
+    mock_install.assert_called_once()
+
+
+def test_init_repo_install_failure_exits_1(tmp_path, capsys):
+    repo = tmp_path / "dotfiles"
+    (repo / ".git").mkdir(parents=True)
+    with patch("dotfiles.cli.config.save"), \
+         patch("dotfiles.cli._install_service", side_effect=RuntimeError("systemctl not found")):
+        with pytest.raises(SystemExit) as exc:
+            run(["init", "--repo", str(repo)])
+    assert exc.value.code == 1
+    assert "systemctl not found" in capsys.readouterr().err
+
+
+# --- init --clone ---
+
+def test_init_clone_calls_git_clone(tmp_path):
+    dest = tmp_path / "dotfiles"
+    with patch("dotfiles.cli.git.clone") as mock_clone, \
+         patch("dotfiles.cli.config.save"), \
+         patch("dotfiles.cli._install_service"), \
+         patch("dotfiles.cli.linker.restore", return_value=RestoreResult()), \
+         patch("builtins.input", return_value=str(dest)):
+        run(["init", "--clone", "git@github.com:user/dotfiles.git"])
+    mock_clone.assert_called_once_with("git@github.com:user/dotfiles.git", dest)
+
+
+def test_init_clone_default_destination():
+    default_dest = Path("~/dotfiles").expanduser()
+    with patch("dotfiles.cli.git.clone") as mock_clone, \
+         patch("dotfiles.cli.config.save"), \
+         patch("dotfiles.cli._install_service"), \
+         patch("dotfiles.cli.linker.restore", return_value=RestoreResult()), \
+         patch("builtins.input", return_value=""):
+        run(["init", "--clone", "git@github.com:user/dotfiles.git"])
+    mock_clone.assert_called_once_with("git@github.com:user/dotfiles.git", default_dest)
+
+
+def test_init_clone_runs_restore_force(tmp_path):
+    dest = tmp_path / "dotfiles"
+    with patch("dotfiles.cli.git.clone"), \
+         patch("dotfiles.cli.config.save"), \
+         patch("dotfiles.cli._install_service"), \
+         patch("dotfiles.cli.linker.restore") as mock_restore, \
+         patch("builtins.input", return_value=str(dest)):
+        mock_restore.return_value = RestoreResult()
+        run(["init", "--clone", "git@github.com:user/dotfiles.git"])
+    mock_restore.assert_called_once_with(dest, force=True)
+
+
+def test_init_clone_git_error_exits_1(tmp_path, capsys):
+    dest = tmp_path / "dotfiles"
+    with patch("dotfiles.cli.git.clone", side_effect=GitError("authentication failed")), \
+         patch("builtins.input", return_value=str(dest)):
+        with pytest.raises(SystemExit) as exc:
+            run(["init", "--clone", "git@github.com:user/dotfiles.git"])
+    assert exc.value.code == 1
+    assert "authentication failed" in capsys.readouterr().err
+
+
+# --- _install_service ---
+
+def test_install_service_writes_service_file_with_user_substituted(tmp_path):
+    import getpass
+    template = tmp_path / "template.service"
+    template.write_text("[Service]\nExecStart=/home/{user}/.local/bin/dotfiles watch\n")
+    service_dir = tmp_path / "systemd_user"
+
+    with patch("dotfiles.cli._TEMPLATE_PATH", template), \
+         patch("dotfiles.cli._SERVICE_DIR", service_dir), \
+         patch("subprocess.run"):
+        from dotfiles.cli import _install_service
+        _install_service()
+
+    service_file = service_dir / "dotfiles-watch.service"
+    assert service_file.exists()
+    content = service_file.read_text()
+    assert "{user}" not in content
+    assert getpass.getuser() in content
+
+
+def test_install_service_calls_systemctl(tmp_path):
+    template = tmp_path / "template.service"
+    template.write_text("[Service]\nExecStart=/home/{user}/.local/bin/dotfiles watch\n")
+    service_dir = tmp_path / "systemd_user"
+
+    with patch("dotfiles.cli._TEMPLATE_PATH", template), \
+         patch("dotfiles.cli._SERVICE_DIR", service_dir), \
+         patch("subprocess.run") as mock_run:
+        from dotfiles.cli import _install_service
+        _install_service()
+
+    commands = [c[0][0] for c in mock_run.call_args_list]
+    assert any("daemon-reload" in cmd for cmd in commands)
+    assert any("enable" in cmd for cmd in commands)

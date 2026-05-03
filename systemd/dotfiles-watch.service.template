@@ -1,0 +1,12 @@
+[Unit]
+Description=dotfiles-cli watcher
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/{user}/.local/bin/dotfiles watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from dotfiles.git import GitError, add, commit, push, pull, rm, head_hash
+from dotfiles.git import GitError, add, clone, commit, push, pull, rm, head_hash
 
 
 def _setup_repo(path: Path) -> None:
@@ -159,3 +159,29 @@ def test_head_hash_raises_on_empty_repo(tmp_path):
 
     with pytest.raises(GitError):
         head_hash(tmp_path)
+
+
+# --- clone ---
+
+def test_clone_creates_local_copy(tmp_path):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(remote), str(seed)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=seed, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=seed, check=True, capture_output=True)
+    _commit_file(seed, "README")
+    subprocess.run(["git", "push", "-u", "origin", "HEAD"], cwd=seed, check=True, capture_output=True)
+
+    dest = tmp_path / "cloned"
+    clone(str(remote), dest)
+
+    assert dest.is_dir()
+    assert (dest / ".git").is_dir()
+    assert (dest / "README").exists()
+
+
+def test_clone_raises_git_error_for_invalid_url(tmp_path):
+    with pytest.raises(GitError):
+        clone("/nonexistent/path/invalid.git", tmp_path / "dest")
