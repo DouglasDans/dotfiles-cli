@@ -41,12 +41,25 @@ def _setup_managed_link(repo: Path, source_path: Path, target: str) -> None:
 
 # --- suggest_target ---
 
-def test_suggest_target_returns_basename():
-    assert suggest_target("~/.zshrc") == ".zshrc"
+def test_suggest_target_strips_dot_from_file_at_home():
+    assert suggest_target("~/.zshrc") == "zshrc"
 
 
-def test_suggest_target_returns_basename_for_directory():
-    assert suggest_target("~/.config/nvim") == "nvim"
+def test_suggest_target_strips_dot_from_config_dir():
+    assert suggest_target("~/.config/nvim") == "config/nvim"
+
+
+def test_suggest_target_strips_dot_from_nested_file():
+    assert suggest_target("~/.config/starship.toml") == "config/starship.toml"
+
+
+def test_suggest_target_strips_dot_from_app_dir():
+    assert suggest_target("~/.claude/settings.json") == "claude/settings.json"
+
+
+def test_suggest_target_falls_back_to_basename_outside_home(tmp_path):
+    path = tmp_path / ".myconfig"
+    assert suggest_target(str(path)) == "myconfig"
 
 
 # --- add_link ---

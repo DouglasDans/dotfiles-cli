@@ -15,7 +15,13 @@ class RestoreResult:
 
 
 def suggest_target(source: str) -> str:
-    return Path(source).expanduser().name
+    path = Path(source).expanduser()
+    try:
+        rel = path.relative_to(Path.home())
+    except ValueError:
+        return path.name.lstrip(".")
+    parts = [p.lstrip(".") for p in rel.parts]
+    return str(Path(*parts))
 
 
 def add_link(source: str, repo: Path, target: str, tags: list[str] | None = None) -> None:

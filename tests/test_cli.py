@@ -25,7 +25,7 @@ def test_add_accepts_suggested_target_on_empty_input():
          patch("dotfiles.cli.git.push"), \
          patch("builtins.input", return_value=""):
         run(["add", "~/.zshrc"])
-    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), ".zshrc", tags=[])
+    mock_add.assert_called_once_with("~/.zshrc", Path("/repo"), "zshrc", tags=[])
 
 
 def test_add_uses_user_provided_target():
@@ -47,8 +47,8 @@ def test_add_commits_target_and_manifest():
          patch("dotfiles.cli.git.push"), \
          patch("builtins.input", return_value=""):
         run(["add", "~/.zshrc"])
-    mock_git_add.assert_called_once_with(Path("/repo"), [".zshrc", "links.toml"])
-    mock_commit.assert_called_once_with(Path("/repo"), "add: .zshrc")
+    mock_git_add.assert_called_once_with(Path("/repo"), ["zshrc", "links.toml"])
+    mock_commit.assert_called_once_with(Path("/repo"), "add: zshrc")
 
 
 def test_add_linker_error_exits_1(capsys):
