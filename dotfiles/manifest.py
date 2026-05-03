@@ -1,5 +1,4 @@
 import tomllib
-import tomli_w
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,16 +39,23 @@ def load(repo: Path) -> list[Link]:
     ]
 
 
+def _toml_str(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def save(repo: Path, links: list[Link]) -> None:
     path = _manifest_path(repo)
-    data = {
-        "links": [
-            {"source": _to_tilde(link.source), "target": link.target, "tags": link.tags}
-            for link in links
-        ]
-    }
-    with open(path, "wb") as f:
-        tomli_w.dump(data, f)
+    blocks = []
+    for link in links:
+        tags = "[" + ", ".join(_toml_str(t) for t in link.tags) + "]"
+        blocks.append(
+            f"[[links]]\n"
+            f"source = {_toml_str(_to_tilde(link.source))}\n"
+            f"target = {_toml_str(link.target)}\n"
+            f"tags = {tags}\n"
+        )
+    with open(path, "w") as f:
+        f.write("\n".join(blocks))
 
 
 def add(repo: Path, link: Link) -> None:
