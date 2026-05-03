@@ -179,6 +179,18 @@ def test_remove_link_removes_from_manifest(repo, tmp_path):
     assert manifest.load(repo) == []
 
 
+def test_remove_link_accepts_target_instead_of_source(repo, tmp_path):
+    source = tmp_path / "home" / ".zshrc"
+    _setup_managed_link(repo, source, "zsh/zshrc")
+
+    target, existed = remove_link("zsh/zshrc", repo)
+
+    assert target == "zsh/zshrc"
+    assert existed is True
+    assert not source.is_symlink()
+    assert source.is_file()
+
+
 def test_remove_link_returns_target_and_existed_true(repo, tmp_path):
     source = tmp_path / "home" / ".zshrc"
     _setup_managed_link(repo, source, "zsh/.zshrc")

@@ -62,8 +62,13 @@ def remove_link(source: str, repo: Path) -> tuple[str, bool]:
 
     links = manifest.load(repo)
     link = next((lnk for lnk in links if lnk.source == normalized), None)
+
     if link is None:
-        raise ValueError(f"{source!r} is not a managed symlink")
+        link = next((lnk for lnk in links if lnk.target == source), None)
+        if link is None:
+            raise ValueError(f"{source!r} is not a managed symlink")
+        source_path = Path(link.source)
+        normalized = link.source
 
     if source_path.exists() and not source_path.is_symlink():
         raise ValueError(
