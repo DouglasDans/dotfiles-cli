@@ -14,7 +14,7 @@ import tomllib
 from dotfiles import config, git, linker, manifest, watcher
 
 _STATE_DIR = Path("~/.config/dotfiles-cli").expanduser()
-_TEMPLATE_PATH = Path(__file__).parent.parent / "systemd" / "dotfiles-watch.service.template"
+_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "systemd" / "dotfiles-watch.service.template"
 _SERVICE_DIR = Path("~/.config/systemd/user").expanduser()
 
 
