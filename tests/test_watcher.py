@@ -78,11 +78,38 @@ class TestWriteState:
         assert data["last_error"] == "oops"
 
 
+# --- .git dir detection ---
+
+class TestIsInGitDir:
+    def test_true_for_path_inside_git_dir(self, tmp_path):
+        assert watcher._is_in_git_dir(tmp_path, str(tmp_path / ".git" / "index"))
+
+    def test_true_for_nested_path_inside_git_dir(self, tmp_path):
+        path = str(tmp_path / ".git" / "refs" / "heads" / "main")
+        assert watcher._is_in_git_dir(tmp_path, path)
+
+    def test_false_for_path_outside_git_dir(self, tmp_path):
+        path = str(tmp_path / "zsh" / ".zshrc")
+        assert not watcher._is_in_git_dir(tmp_path, path)
+
+    def test_false_for_path_outside_repo(self, tmp_path):
+        assert not watcher._is_in_git_dir(tmp_path, "/some/other/path/.git/index")
+
+
 # --- on_any_event ---
 
 class TestOnAnyEvent:
     def _make_handler(self, repo: Path) -> watcher._DotfilesEventHandler:
         return watcher._DotfilesEventHandler(repo, debounce_seconds=1)
+
+    def test_skips_paths_inside_git_dir_without_calling_is_ignored(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        path = str(tmp_path / ".git" / "index.lock")
+        event = SimpleNamespace(is_directory=False, src_path=path)
+        with patch.object(git, "is_ignored") as mock_ignored:
+            handler.on_any_event(event)
+        assert handler._pending == set()
+        mock_ignored.assert_not_called()
 
     def test_ignores_directory_events(self, tmp_path):
         handler = self._make_handler(tmp_path)

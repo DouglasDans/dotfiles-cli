@@ -146,6 +146,7 @@ O `unlink` propaga para todas as máquinas: na próxima execução do watcher de
 3. Lê o manifesto e monta a lista de caminhos a observar (os targets dentro do repo)
 4. Inicia o `watchdog` observando o diretório do repo
 5. Em cada evento de mudança:
+   - Se o path estiver dentro de `.git/`: descarta o evento antes de qualquer outra checagem (evita loop de realimentação com as próprias escritas do git)
    - Se o path for gitignored (`git check-ignore`): descarta o evento, não acumula e não reseta o debounce
    - Se o arquivo alterado for `links.toml`: agenda chamada ao `restore` (sem `--force`) após o debounce, além do commit normal
    - Acumula o caminho do arquivo alterado
@@ -212,6 +213,7 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - **Watcher instância única**: `watcher.pid` previne duas instâncias simultâneas. PID file é removido no encerramento normal e em SIGTERM/SIGINT.
 - **Rebase em andamento**: watcher detecta estado de rebase no `.git/` e pula o ciclo em vez de acumular falhas em loop.
 - **Eventos de paths gitignored são descartados na origem**: `on_any_event` verifica `git.is_ignored` antes de acumular o path em `_pending` ou resetar o debounce. Sem isso, diretórios gitignored que ainda geram eventos de filesystem (ex: plugins de terceiros com `.git` interno registrados como gitlink órfão, sem `.gitmodules`) fazem o `git add` de `_flush` falhar (`is in submodule`) e abortam o ciclo inteiro antes do commit/push — mesmo para os outros arquivos legítimos que estavam no mesmo lote.
+- **Eventos dentro de `.git/` são descartados antes de tudo**: `on_any_event` chama `_is_in_git_dir` e retorna cedo, antes até de `git.is_ignored` (que não cobre esse caso — `.git` não é gitignored, é um diretório especial). Sem esse filtro, toda operação git do próprio `_flush` (`pull`, `add`, `commit`, `push`) escreve dentro de `.git/` (locks, refs, logs, objects), o `watchdog` observa essas escritas recursivamente, gera novos eventos, reseta o debounce, e dispara outro `_flush` — um loop de realimentação que já causou consumo de ~10GB de RAM e CPU descontrolada em produção antes de ser identificado. O deadlock de dirty state (ver "Pull antes do push" acima) mascarava esse loop acidentalmente, porque o `pull` falhava antes de chegar no `git add`.
 
 ## Regras de implementação
 

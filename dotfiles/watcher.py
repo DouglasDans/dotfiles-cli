@@ -39,6 +39,14 @@ def _write_state(updates: dict[str, str]) -> None:
         tomli_w.dump(state, f)
 
 
+def _is_in_git_dir(repo: Path, src: str) -> bool:
+    try:
+        rel = Path(src).relative_to(repo)
+    except ValueError:
+        return False
+    return rel.parts[:1] == (".git",)
+
+
 def _is_rebase_in_progress(repo: Path) -> bool:
     return (
         (repo / ".git" / "rebase-merge").exists()
@@ -86,6 +94,8 @@ class _DotfilesEventHandler(FileSystemEventHandler):
             return
         src = getattr(event, "src_path", None)
         if src is None:
+            return
+        if _is_in_git_dir(self._repo, src):
             return
         if git.is_ignored(self._repo, src):
             return
