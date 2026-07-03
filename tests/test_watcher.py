@@ -173,6 +173,8 @@ class TestFlush:
         handler = self._make_handler(tmp_path)
         handler._pending = {str(tmp_path / "zsh" / ".zshrc")}
         with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "add"), \
+             patch.object(git, "commit"), \
              patch.object(git, "pull", side_effect=git.GitError("connection refused")), \
              patch.object(watcher, "_write_state") as mock_write, \
              patch.object(watcher, "_log"):
@@ -180,6 +182,77 @@ class TestFlush:
         updates = mock_write.call_args[0][0]
         assert "last_error" in updates
         assert "last_error_at" in updates
+
+    def test_writes_error_on_push_failure(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        changed = repo / "zsh" / ".zshrc"
+        changed.parent.mkdir()
+        changed.write_text("content")
+
+        handler = self._make_handler(repo)
+        handler._pending = {str(changed)}
+
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "add"), \
+             patch.object(git, "commit"), \
+             patch.object(git, "pull"), \
+             patch.object(git, "push", side_effect=git.GitError("non-fast-forward")), \
+             patch.object(watcher, "_write_state") as mock_write, \
+             patch.object(watcher, "_log"):
+            handler._flush()
+        updates = mock_write.call_args[0][0]
+        assert "last_error" in updates
+        assert "last_error_at" in updates
+
+    def test_commits_before_pulling_and_pushes_after(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        changed = repo / "zsh" / ".zshrc"
+        changed.parent.mkdir()
+        changed.write_text("content")
+
+        handler = self._make_handler(repo)
+        handler._pending = {str(changed)}
+
+        call_order = []
+
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "add", side_effect=lambda *a, **k: call_order.append("add")), \
+             patch.object(git, "commit", side_effect=lambda *a, **k: call_order.append("commit")), \
+             patch.object(git, "pull", side_effect=lambda *a, **k: call_order.append("pull")), \
+             patch.object(git, "push", side_effect=lambda *a, **k: call_order.append("push")), \
+             patch.object(git, "head_hash", return_value="abc"), \
+             patch.object(watcher, "_write_state"), \
+             patch.object(watcher, "_log"):
+            handler._flush()
+
+        assert call_order == ["add", "commit", "pull", "push"]
+
+    def test_nothing_to_commit_is_not_an_error(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        changed = repo / "zsh" / ".zshrc"
+        changed.parent.mkdir()
+        changed.write_text("content")
+
+        handler = self._make_handler(repo)
+        handler._pending = {str(changed)}
+
+        with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
+             patch.object(git, "add"), \
+             patch.object(git, "commit", side_effect=git.GitError(
+                 "On branch main\nnothing to commit, working tree clean"
+             )), \
+             patch.object(git, "pull") as mock_pull, \
+             patch.object(git, "push") as mock_push, \
+             patch.object(watcher, "_write_state") as mock_write, \
+             patch.object(watcher, "_log"):
+            handler._flush()
+
+        mock_pull.assert_not_called()
+        mock_push.assert_not_called()
+        mock_write.assert_not_called()
 
     def test_happy_path_commits_and_pushes(self, tmp_path):
         repo = tmp_path / "repo"
@@ -232,7 +305,7 @@ class TestFlush:
         with patch.object(watcher, "_is_rebase_in_progress", return_value=False), \
              patch.object(git, "pull"), \
              patch.object(git, "add"), \
-             patch.object(git, "commit", side_effect=git.GitError("nothing to commit")), \
+             patch.object(git, "commit", side_effect=git.GitError("fatal: unable to write new_index file")), \
              patch.object(watcher, "_write_state") as mock_write, \
              patch.object(watcher, "_log"):
             handler._flush()

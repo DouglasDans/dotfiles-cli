@@ -152,12 +152,12 @@ O `unlink` propaga para todas as máquinas: na próxima execução do watcher de
    - Acumula o caminho do arquivo alterado
    - Reseta o timer de debounce (padrão: 30s, configurável)
 6. Quando o timer expira (sem novas mudanças):
-   - Verifica se há rebase em andamento (`.git/rebase-merge/` ou `.git/rebase-apply/`) — se sim, loga erro e aborta o ciclo sem tentar pull
-   - `git pull --rebase` — sincroniza mudanças de outras máquinas antes de commitar
+   - Verifica se há rebase em andamento (`.git/rebase-merge/` ou `.git/rebase-apply/`) — se sim, loga erro e aborta o ciclo sem tentar nada
    - `git add <arquivos acumulados>` — somente os arquivos que geraram eventos, nunca `git add .`
-   - `git commit -m "auto: <lista de arquivos alterados>"`
+   - `git commit -m "auto: <lista de arquivos alterados>"` — se falhar por não ter nada staged ("nothing to commit"), loga e encerra o ciclo silenciosamente, sem gravar erro
+   - `git pull --rebase` — só agora, com a mudança local já commitada, sincroniza mudanças de outras máquinas
    - `git push`
-   - Se `links.toml` estava entre os arquivos do pull: executa `restore` (sem `--force`) para criar symlinks novos
+   - Se `links.toml` estava entre os arquivos trazidos pelo pull: executa `restore` (sem `--force`) para criar symlinks novos
    - Loga no journald via `logger -t dotfiles-cli "pushed N changes"`
    - Grava `last_commit` e `last_commit_at` em `state.toml`
 7. Se qualquer operação git falhar (sem rede, conflito, etc.):
@@ -204,7 +204,8 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - **`restore` idempotente**: pode ser rodado quantas vezes quiser sem efeito colateral. Essencial para bootstrap de máquina nova.
 - **Falha silenciosa no push**: watcher não pode travar por falta de rede. Loga o erro, grava em `state.toml` e tenta no próximo ciclo.
 - **`git add` cirúrgico**: watcher acumula os caminhos dos eventos watchdog e faz `git add <arquivos específicos>`. O `.gitignore` do repo do usuário é segunda linha de defesa, não o filtro primário — o CLI não o cria nem o gerencia.
-- **Pull antes do push**: watcher faz `git pull --rebase` antes de commitar para incorporar mudanças de outras máquinas. Conflito de rebase é tratado como erro: loga, não commita, tenta no próximo ciclo.
+- **Commit antes do pull**: `_flush` faz `git add` → `git commit` → `git pull --rebase` → `git push`, nessa ordem. A ordem inversa (pull antes de commit) foi a original do projeto e nunca funcionou de fato: o motivo de existir um evento pendente é sempre "um arquivo mudou no disco", então o working tree já está sujo no início de todo ciclo, e `git pull --rebase` recusa rodar com qualquer coisa não commitada — mesmo que a mudança pendente não tenha nada a ver com o que vem do remoto. Isso travou o repo pessoal do usuário por 2 meses sem nenhum commit automático bem-sucedido. Com commit primeiro, o rebase sempre tem o que fazer (replay do commit local em cima do remoto) em vez de recusar rodar; e se pull ou push falharem depois, o commit já existe localmente — nada se perde, só falta empurrar no próximo ciclo. Conflito real de conteúdo (mesma linha alterada em duas máquinas) ainda pausa o rebase e exige resolução manual — isso não fica visível em `dotfiles status` hoje (débito técnico registrado, fora de escopo).
+- **"Nothing to commit" não é erro**: se `git commit` falhar porque não há nada staged (ex: pull anterior já trouxe exatamente essa mudança de outra máquina), `_flush` loga e retorna silenciosamente, sem gravar `last_error`. Evita que um ciclo espúrio (gerado pelo próprio pull escrevendo conteúdo real fora de `.git/`, ver item abaixo) polua o estado com um erro que não é real.
 - **`init --clone` emenda `restore`**: após clonar e configurar o serviço, executa `restore --force` automaticamente para criar todos os symlinks sem interação.
 - **`add` é atômico com rollback**: se o symlink falhar após o move, o arquivo é devolvido ao `source` original. O estado do sistema nunca fica parcialmente modificado.
 - **`add` e `unlink` fazem push**: operações estruturais (adicionar/remover links do manifesto) propagam imediatamente para o repo remoto. O watcher cuida apenas de mudanças de conteúdo.

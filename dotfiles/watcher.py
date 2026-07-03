@@ -39,6 +39,10 @@ def _write_state(updates: dict[str, str]) -> None:
         tomli_w.dump(state, f)
 
 
+def _is_nothing_to_commit(message: str) -> bool:
+    return "nothing to commit" in message
+
+
 def _is_in_git_dir(repo: Path, src: str) -> bool:
     try:
         rel = Path(src).relative_to(repo)
@@ -142,9 +146,30 @@ class _DotfilesEventHandler(FileSystemEventHandler):
             _log("rebase in progress — skipping commit cycle")
             return
 
-        links_toml_hash_before = _links_toml_hash(repo)
+        relative_paths: list[str] = []
+        for p in paths:
+            try:
+                relative_paths.append(str(Path(p).relative_to(repo)))
+            except ValueError:
+                pass
+
+        if not relative_paths:
+            return
 
         with self._git_lock:
+            try:
+                git.add(repo, relative_paths)
+                git.commit(repo, f"auto: {', '.join(relative_paths)}")
+            except git.GitError as e:
+                if _is_nothing_to_commit(str(e)):
+                    _log(f"nothing to commit for {', '.join(relative_paths)}")
+                    return
+                _log(f"commit failed: {e}")
+                _write_state({"last_error": str(e), "last_error_at": _now()})
+                return
+
+            links_toml_hash_before = _links_toml_hash(repo)
+
             try:
                 git.pull(repo)
             except git.GitError as e:
@@ -152,33 +177,23 @@ class _DotfilesEventHandler(FileSystemEventHandler):
                 _write_state({"last_error": str(e), "last_error_at": _now()})
                 return
 
+            try:
+                git.push(repo)
+            except git.GitError as e:
+                _log(f"push failed: {e}")
+                _write_state({"last_error": str(e), "last_error_at": _now()})
+                return
+
             links_toml_hash_after = _links_toml_hash(repo)
             links_toml_updated_by_pull = links_toml_hash_before != links_toml_hash_after
 
-            relative_paths: list[str] = []
-            for p in paths:
-                try:
-                    relative_paths.append(str(Path(p).relative_to(repo)))
-                except ValueError:
-                    pass
+            try:
+                commit_hash = git.head_hash(repo)
+            except git.GitError:
+                commit_hash = "unknown"
 
-            if relative_paths:
-                try:
-                    git.add(repo, relative_paths)
-                    git.commit(repo, f"auto: {', '.join(relative_paths)}")
-                    git.push(repo)
-                except git.GitError as e:
-                    _log(f"commit/push failed: {e}")
-                    _write_state({"last_error": str(e), "last_error_at": _now()})
-                    return
-
-                try:
-                    commit_hash = git.head_hash(repo)
-                except git.GitError:
-                    commit_hash = "unknown"
-
-                _write_state({"last_commit": commit_hash, "last_commit_at": _now()})
-                _log(f"pushed {len(relative_paths)} change(s)")
+            _write_state({"last_commit": commit_hash, "last_commit_at": _now()})
+            _log(f"pushed {len(relative_paths)} change(s)")
 
         links_toml_in_paths = str(repo / "links.toml") in paths
         if links_toml_in_paths or links_toml_updated_by_pull:
