@@ -37,6 +37,13 @@ def clone(url: str, dest: Path) -> None:
     _run(["git", "clone", url, str(dest)], cwd=dest.parent)
 
 
+def is_ignored(repo: Path, path: str) -> bool:
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "--", path], cwd=repo, capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
 def head_hash(repo: Path) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True

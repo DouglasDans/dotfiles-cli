@@ -146,6 +146,7 @@ O `unlink` propaga para todas as máquinas: na próxima execução do watcher de
 3. Lê o manifesto e monta a lista de caminhos a observar (os targets dentro do repo)
 4. Inicia o `watchdog` observando o diretório do repo
 5. Em cada evento de mudança:
+   - Se o path for gitignored (`git check-ignore`): descarta o evento, não acumula e não reseta o debounce
    - Se o arquivo alterado for `links.toml`: agenda chamada ao `restore` (sem `--force`) após o debounce, além do commit normal
    - Acumula o caminho do arquivo alterado
    - Reseta o timer de debounce (padrão: 30s, configurável)
@@ -210,6 +211,7 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - **Watcher detecta `links.toml`**: mudança no `links.toml` via pull dispara `restore` automático para criar os novos symlinks sem intervenção do usuário.
 - **Watcher instância única**: `watcher.pid` previne duas instâncias simultâneas. PID file é removido no encerramento normal e em SIGTERM/SIGINT.
 - **Rebase em andamento**: watcher detecta estado de rebase no `.git/` e pula o ciclo em vez de acumular falhas em loop.
+- **Eventos de paths gitignored são descartados na origem**: `on_any_event` verifica `git.is_ignored` antes de acumular o path em `_pending` ou resetar o debounce. Sem isso, diretórios gitignored que ainda geram eventos de filesystem (ex: plugins de terceiros com `.git` interno registrados como gitlink órfão, sem `.gitmodules`) fazem o `git add` de `_flush` falhar (`is in submodule`) e abortam o ciclo inteiro antes do commit/push — mesmo para os outros arquivos legítimos que estavam no mesmo lote.
 
 ## Regras de implementação
 

@@ -87,6 +87,8 @@ class _DotfilesEventHandler(FileSystemEventHandler):
         src = getattr(event, "src_path", None)
         if src is None:
             return
+        if git.is_ignored(self._repo, src):
+            return
         with self._lock:
             self._pending.add(src)
             if self._timer is not None:

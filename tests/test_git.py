@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from dotfiles.git import GitError, add, clone, commit, push, pull, rm, head_hash
+from dotfiles.git import GitError, add, clone, commit, push, pull, rm, head_hash, is_ignored
 
 
 def _setup_repo(path: Path) -> None:
@@ -159,6 +159,22 @@ def test_head_hash_raises_on_empty_repo(tmp_path):
 
     with pytest.raises(GitError):
         head_hash(tmp_path)
+
+
+# --- is_ignored ---
+
+def test_is_ignored_returns_true_for_gitignored_path(local_repo):
+    (local_repo / ".gitignore").write_text("ignored/\n")
+    (local_repo / "ignored").mkdir()
+    (local_repo / "ignored" / "file.txt").write_text("x")
+
+    assert is_ignored(local_repo, str(local_repo / "ignored" / "file.txt"))
+
+
+def test_is_ignored_returns_false_for_tracked_path(local_repo):
+    (local_repo / "foo.txt").write_text("hello")
+
+    assert not is_ignored(local_repo, str(local_repo / "foo.txt"))
 
 
 # --- clone ---

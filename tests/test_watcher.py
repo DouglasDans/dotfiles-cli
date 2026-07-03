@@ -1,6 +1,7 @@
 import os
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -75,6 +76,48 @@ class TestWriteState:
                 data = tomllib.load(f)
         assert data["last_commit"] == "new"
         assert data["last_error"] == "oops"
+
+
+# --- on_any_event ---
+
+class TestOnAnyEvent:
+    def _make_handler(self, repo: Path) -> watcher._DotfilesEventHandler:
+        return watcher._DotfilesEventHandler(repo, debounce_seconds=1)
+
+    def test_ignores_directory_events(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        event = SimpleNamespace(is_directory=True, src_path=str(tmp_path / "foo"))
+        with patch.object(git, "is_ignored") as mock_ignored:
+            handler.on_any_event(event)
+        assert handler._pending == set()
+        mock_ignored.assert_not_called()
+
+    def test_skips_when_src_path_missing(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        event = SimpleNamespace(is_directory=False, src_path=None)
+        with patch.object(git, "is_ignored") as mock_ignored:
+            handler.on_any_event(event)
+        assert handler._pending == set()
+        mock_ignored.assert_not_called()
+
+    def test_adds_non_ignored_path_to_pending(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        path = str(tmp_path / "zsh" / ".zshrc")
+        event = SimpleNamespace(is_directory=False, src_path=path)
+        with patch.object(git, "is_ignored", return_value=False):
+            handler.on_any_event(event)
+        assert path in handler._pending
+        assert handler._timer is not None
+        handler._timer.cancel()
+
+    def test_skips_gitignored_path(self, tmp_path):
+        handler = self._make_handler(tmp_path)
+        path = str(tmp_path / "config" / "zsh" / "plugins" / "zsh-autosuggestions" / "file")
+        event = SimpleNamespace(is_directory=False, src_path=path)
+        with patch.object(git, "is_ignored", return_value=True):
+            handler.on_any_event(event)
+        assert handler._pending == set()
+        assert handler._timer is None
 
 
 # --- _flush ---
