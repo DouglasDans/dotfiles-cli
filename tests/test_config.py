@@ -34,6 +34,34 @@ def test_load_applies_default_sync_interval_when_missing(tmp_path):
     assert config.sync_interval_seconds == 300
 
 
+def test_load_applies_default_max_batch_seconds_when_missing(tmp_path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('repo = "/home/user/dotfiles"\n')
+
+    config = load(config_file)
+
+    assert config.max_batch_seconds == 300
+
+
+def test_load_respects_explicit_max_batch_seconds(tmp_path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('repo = "/home/user/dotfiles"\nmax_batch_seconds = 600\n')
+
+    config = load(config_file)
+
+    assert config.max_batch_seconds == 600
+
+
+def test_load_rejects_max_batch_smaller_than_debounce(tmp_path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        'repo = "/home/user/dotfiles"\ndebounce_seconds = 60\nmax_batch_seconds = 30\n'
+    )
+
+    with pytest.raises(ValueError, match="max_batch_seconds"):
+        load(config_file)
+
+
 def test_load_raises_with_orientador_message_when_file_not_found(tmp_path):
     config_file = tmp_path / "config.toml"
 
@@ -53,7 +81,12 @@ def test_load_expands_tilde_in_repo(tmp_path):
 
 def test_save_writes_config_file(tmp_path):
     config_file = tmp_path / "config.toml"
-    config = Config(repo="/home/user/dotfiles", debounce_seconds=45, sync_interval_seconds=120)
+    config = Config(
+        repo="/home/user/dotfiles",
+        debounce_seconds=45,
+        sync_interval_seconds=120,
+        max_batch_seconds=450,
+    )
 
     save(config, config_file)
 
@@ -61,6 +94,7 @@ def test_save_writes_config_file(tmp_path):
     assert result.repo == "/home/user/dotfiles"
     assert result.debounce_seconds == 45
     assert result.sync_interval_seconds == 120
+    assert result.max_batch_seconds == 450
 
 
 def test_save_creates_parent_dirs(tmp_path):

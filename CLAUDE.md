@@ -13,7 +13,7 @@ Dois repositórios separados por design:
 ## Stack
 
 - **Python 3.11+** (sem dependências de sistema além do Python)
-- **watchdog** — watcher de filesystem
+- **watchdog >=6.0,<7** — watcher de filesystem. O pin de major é intencional: o filtro de tipos de evento do watcher depende de quais classes de evento o watchdog emite (ver Decisões de design)
 - **tomllib** (stdlib 3.11+) para leitura de TOML; **tomli-w** para escrita
 - **argparse** — CLI
 - **subprocess** — chamadas git
@@ -46,7 +46,11 @@ dotfiles-cli/
 ```toml
 repo = "/home/user/dotfiles"
 debounce_seconds = 30
+sync_interval_seconds = 300
+max_batch_seconds = 300
 ```
+
+`max_batch_seconds` é o teto do debounce: mesmo sob fluxo contínuo de eventos, um flush acontece no máximo a cada `max_batch_seconds`. Deve ser >= `debounce_seconds` (validado no load, erro orientador). Todos os campos exceto `repo` têm default e são opcionais — configs antigos sem as chaves novas continuam válidos.
 
 ### `~/.config/dotfiles-cli/state.toml` (estado do watcher, não versionado)
 
@@ -143,27 +147,26 @@ O `unlink` propaga para todas as máquinas: na próxima execução do watcher de
 
 1. Verifica `watcher.pid` — se existir com PID ativo, aborta com erro (`"watcher already running (PID X)"`)
 2. Grava o próprio PID em `watcher.pid`; remove o arquivo ao encerrar (inclusive em SIGTERM/SIGINT)
-3. Lê o manifesto e monta a lista de caminhos a observar (os targets dentro do repo)
-4. Inicia o `watchdog` observando o diretório do repo
-5. Em cada evento de mudança:
-   - Se o path estiver dentro de `.git/`: descarta o evento antes de qualquer outra checagem (evita loop de realimentação com as próprias escritas do git)
-   - Se o path for gitignored (`git check-ignore`): descarta o evento, não acumula e não reseta o debounce
-   - Se o arquivo alterado for `links.toml`: agenda chamada ao `restore` (sem `--force`) após o debounce, além do commit normal
-   - Acumula o caminho do arquivo alterado
-   - Reseta o timer de debounce (padrão: 30s, configurável)
-6. Quando o timer expira (sem novas mudanças):
-   - Verifica se há rebase em andamento (`.git/rebase-merge/` ou `.git/rebase-apply/`) — se sim, loga erro e aborta o ciclo sem tentar nada
-   - `git add <arquivos acumulados>` — somente os arquivos que geraram eventos, nunca `git add .`
-   - `git commit -m "auto: <lista de arquivos alterados>"` — se falhar por não ter nada staged ("nothing to commit"), loga e encerra o ciclo silenciosamente, sem gravar erro
-   - `git pull --rebase` — só agora, com a mudança local já commitada, sincroniza mudanças de outras máquinas
+3. Inicia o `watchdog` observando o diretório do repo recursivamente, com `event_filter` — uma **whitelist** de tipos de evento que mutam conteúdo (`File{Created,Modified,Deleted,Moved}`, `Dir{Created,Deleted,Moved}`). Eventos de leitura (`opened`, `closed_no_write`) e redundantes (`closed`, `DirModified`) nunca entram na fila do observer
+4. Em cada evento aceito pelo filtro:
+   - Coleta `src_path` **e** `dest_path` (eventos `moved` têm os dois)
+   - Se todos os paths do evento estão dentro de `.git/`: descarta
+   - Senão: marca a flag de sujeira e (re)agenda o flush. O intervalo é `min(debounce_seconds, teto restante do lote)` — o primeiro evento do lote inicia o relógio de `max_batch_seconds`
+   - **Nenhum subprocesso é executado no caminho do evento** — custo por evento é de microssegundos
+5. Quando o timer expira:
+   - Verifica se há rebase em andamento (`.git/rebase-merge/` ou `.git/rebase-apply/`) — se sim, loga e aborta o ciclo sem tentar nada
+   - `git status --porcelain -z` decide **o que** mudou — os eventos são só o gatilho, o git é a fonte da verdade. Se o working tree está limpo, encerra silenciosamente sem log de erro
+   - `git add -A` — o `.gitignore` do repo do usuário é o filtro primário, aplicado pelo próprio git
+   - `git commit -m "auto: <paths>"` (até 5 paths listados; acima disso, `auto: N files changed`). "Nothing to commit" loga e encerra sem gravar erro (defesa contra corrida entre o status e o add)
+   - `git pull --rebase` — com a mudança local já commitada
    - `git push`
-   - Se `links.toml` estava entre os arquivos trazidos pelo pull: executa `restore` (sem `--force`) para criar symlinks novos
-   - Loga no journald via `logger -t dotfiles-cli "pushed N changes"`
-   - Grava `last_commit` e `last_commit_at` em `state.toml`
+   - Se `links.toml` estava entre os arquivos alterados (local) ou foi trazido pelo pull: executa `restore` (sem `--force`)
+   - Loga no journald via `logger -t dotfiles-cli "pushed N changes"` e grava `last_commit`/`last_commit_at` em `state.toml`
+6. A cada `sync_interval_seconds`, o `_sync` roda `git pull --rebase` + `git push` — o push aqui é o retry de commits que ficaram sem push por falha de rede em ciclos anteriores. Se o pull trouxe `links.toml` novo, executa `restore`
 7. Se qualquer operação git falhar (sem rede, conflito, etc.):
    - Loga o erro no journald, não trava
    - Grava `last_error` e `last_error_at` em `state.toml`
-   - Tenta novamente no próximo ciclo de debounce
+   - Tenta novamente no próximo ciclo de debounce ou no próximo `_sync`
 
 ## Template do systemd user service
 
@@ -177,10 +180,13 @@ Type=simple
 ExecStart=/home/{user}/.local/bin/dotfiles watch
 Restart=on-failure
 RestartSec=10
+MemoryMax=256M
 
 [Install]
 WantedBy=default.target
 ```
+
+`MemoryMax=256M` é contenção deliberada: se qualquer regressão futura voltar a vazar memória, o systemd mata e reinicia o serviço em vez de deixar o vazamento derrubar a máquina (já aconteceu: 9.6GB de RSS e OOM kill do sistema inteiro).
 
 Instalado em `~/.config/systemd/user/dotfiles-watch.service` pelo comando `init`.
 
@@ -202,10 +208,10 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - **Sem PyPI**: instalação via clone + symlink, sem `pip install`. Requisito de portabilidade.
 - **Journald via `logger`**: sem dependência de `systemd-python` ou similar. `subprocess` chamando `logger` é suficiente.
 - **`restore` idempotente**: pode ser rodado quantas vezes quiser sem efeito colateral. Essencial para bootstrap de máquina nova.
-- **Falha silenciosa no push**: watcher não pode travar por falta de rede. Loga o erro, grava em `state.toml` e tenta no próximo ciclo.
-- **`git add` cirúrgico**: watcher acumula os caminhos dos eventos watchdog e faz `git add <arquivos específicos>`. O `.gitignore` do repo do usuário é segunda linha de defesa, não o filtro primário — o CLI não o cria nem o gerencia.
+- **Falha silenciosa no push**: watcher não pode travar por falta de rede. Loga o erro, grava em `state.toml` e tenta no próximo ciclo. O `_sync` periódico também faz `git push` — é ele que garante que um commit local que ficou sem push (rede fora no momento do flush) seja empurrado em no máximo `sync_interval_seconds`, mesmo sem nenhum evento novo.
+- **`git status` como fonte da verdade, não os paths dos eventos**: o watcher trata eventos apenas como gatilho ("algo mudou"); no flush, `git status --porcelain -z` decide o que commitar e `git add -A` stageia. A abordagem anterior ("git add cirúrgico": acumular paths de eventos e adicionar só eles) causou três bugs de produção distintos — pathspec de submodule órfão abortando o lote, paths de `.git/` entrando no add, e arquivos temporários (`mimeapps.list.new`) que geravam evento e sumiam antes do flush, fazendo `git add` falhar com "did not match any files" e abortar o commit dos demais arquivos. Paths crus de inotify não são uma declaração confiável do que commitar; o git é. Consequência aceita: qualquer arquivo não-ignorado sujo no repo entra no commit do ciclo, mesmo que a sujeira venha de outra origem — comportamento desejável para uma ferramenta de backup. O `.gitignore` do repo do usuário é o filtro primário, aplicado pelo próprio git; o CLI não o cria nem o gerencia.
 - **Commit antes do pull**: `_flush` faz `git add` → `git commit` → `git pull --rebase` → `git push`, nessa ordem. A ordem inversa (pull antes de commit) foi a original do projeto e nunca funcionou de fato: o motivo de existir um evento pendente é sempre "um arquivo mudou no disco", então o working tree já está sujo no início de todo ciclo, e `git pull --rebase` recusa rodar com qualquer coisa não commitada — mesmo que a mudança pendente não tenha nada a ver com o que vem do remoto. Isso travou o repo pessoal do usuário por 2 meses sem nenhum commit automático bem-sucedido. Com commit primeiro, o rebase sempre tem o que fazer (replay do commit local em cima do remoto) em vez de recusar rodar; e se pull ou push falharem depois, o commit já existe localmente — nada se perde, só falta empurrar no próximo ciclo. Conflito real de conteúdo (mesma linha alterada em duas máquinas) ainda pausa o rebase e exige resolução manual — isso não fica visível em `dotfiles status` hoje (débito técnico registrado, fora de escopo).
-- **"Nothing to commit" não é erro**: se `git commit` falhar porque não há nada staged (ex: pull anterior já trouxe exatamente essa mudança de outra máquina), `_flush` loga e retorna silenciosamente, sem gravar `last_error`. Evita que um ciclo espúrio (gerado pelo próprio pull escrevendo conteúdo real fora de `.git/`, ver item abaixo) polua o estado com um erro que não é real.
+- **"Nothing to commit" não é erro**: o caso comum (working tree limpo no flush, ex: pull anterior já trouxe exatamente essa mudança de outra máquina) é resolvido pelo próprio `git status` — flush encerra silenciosamente antes de qualquer add/commit. A tolerância a "nothing to commit" no `git commit` permanece como defesa contra corrida entre o status e o add. Nenhum dos dois casos grava `last_error`.
 - **`init --clone` emenda `restore`**: após clonar e configurar o serviço, executa `restore --force` automaticamente para criar todos os symlinks sem interação.
 - **`add` é atômico com rollback**: se o symlink falhar após o move, o arquivo é devolvido ao `source` original. O estado do sistema nunca fica parcialmente modificado.
 - **`add` e `unlink` fazem push**: operações estruturais (adicionar/remover links do manifesto) propagam imediatamente para o repo remoto. O watcher cuida apenas de mudanças de conteúdo.
@@ -213,8 +219,9 @@ O binário principal é `dotfiles/cli.py` com shebang `#!/usr/bin/env python3`.
 - **Watcher detecta `links.toml`**: mudança no `links.toml` via pull dispara `restore` automático para criar os novos symlinks sem intervenção do usuário.
 - **Watcher instância única**: `watcher.pid` previne duas instâncias simultâneas. PID file é removido no encerramento normal e em SIGTERM/SIGINT.
 - **Rebase em andamento**: watcher detecta estado de rebase no `.git/` e pula o ciclo em vez de acumular falhas em loop.
-- **Eventos de paths gitignored são descartados na origem**: `on_any_event` verifica `git.is_ignored` antes de acumular o path em `_pending` ou resetar o debounce. Sem isso, diretórios gitignored que ainda geram eventos de filesystem (ex: plugins de terceiros com `.git` interno registrados como gitlink órfão, sem `.gitmodules`) fazem o `git add` de `_flush` falhar (`is in submodule`) e abortam o ciclo inteiro antes do commit/push — mesmo para os outros arquivos legítimos que estavam no mesmo lote.
-- **Eventos dentro de `.git/` são descartados antes de tudo**: `on_any_event` chama `_is_in_git_dir` e retorna cedo, antes até de `git.is_ignored` (que não cobre esse caso — `.git` não é gitignored, é um diretório especial). Sem esse filtro, toda operação git do próprio `_flush` (`pull`, `add`, `commit`, `push`) escreve dentro de `.git/` (locks, refs, logs, objects), o `watchdog` observa essas escritas recursivamente, gera novos eventos, reseta o debounce, e dispara outro `_flush` — um loop de realimentação que já causou consumo de ~10GB de RAM e CPU descontrolada em produção antes de ser identificado. O deadlock de dirty state (ver "Pull antes do push" acima) mascarava esse loop acidentalmente, porque o `pull` falhava antes de chegar no `git add`.
+- **Whitelist de tipos de evento (`event_filter`) — a lição mais cara do projeto**: o watchdog >= 2.3 emite eventos `opened` e `closed_no_write` para **meras leituras** de arquivo. Como `~/.gitconfig` é symlink para dentro do repo observado, todo comando git de qualquer processo do sistema (starship, IDE, o próprio CLI) gera eventos no repo ao ler a config global — medido: 3 aberturas por invocação de git = 6 eventos. Na arquitetura antiga, cada evento disparava um `git check-ignore` (subprocesso), que por sua vez lia o gitconfig e gerava 6 novos eventos: um loop de realimentação exponencial que pinava um core inteiro (milhares de forks/segundo), crescia a fila **ilimitada** do observer até 9.6GB de RSS e terminava em OOM kill — silenciosamente, porque cada evento também resetava o debounce e o flush nunca rodava. Duas defesas estruturais: (1) `event_filter` no `observer.schedule` com whitelist de eventos que mutam conteúdo — eventos de leitura nunca entram na fila; (2) **zero subprocessos no caminho do evento** — o handler só marca uma flag e agenda timer. Qualquer mudança futura no `on_any_event` deve preservar essas duas propriedades. O pin `watchdog>=6,<7` existe porque a whitelist depende das classes de evento do major instalado.
+- **Eventos dentro de `.git/` são descartados no handler**: escritas do próprio git (locks, refs, objects durante `pull`/`commit`/`push`) passam pelo `event_filter` (são `created`/`modified` legítimos), então `on_any_event` descarta eventos cujos paths (src **e** dest) estão todos sob `.git/`. Sem isso, cada flush geraria eventos que agendam o próximo flush em loop (bug histórico: ~10GB de RAM antes do primeiro diagnóstico).
+- **Teto de debounce (`max_batch_seconds`)**: o debounce clássico reseta a cada evento — sob fluxo contínuo, o flush nunca rodaria (foi exatamente o modo de falha do loop do gitconfig: horas sem commit e sem log). O intervalo de cada timer é `min(debounce_seconds, tempo restante do lote)`, garantindo um flush no máximo a cada `max_batch_seconds` mesmo sob eventos ininterruptos.
 
 ## Regras de implementação
 

@@ -11,6 +11,7 @@ class Config:
     repo: str
     debounce_seconds: int = 30
     sync_interval_seconds: int = 300
+    max_batch_seconds: int = 300
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -22,11 +23,18 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
             f"config not found — run 'dotfiles init' first"
         )
 
-    return Config(
+    config = Config(
         repo=str(Path(data["repo"]).expanduser().resolve()),
         debounce_seconds=data.get("debounce_seconds", 30),
         sync_interval_seconds=data.get("sync_interval_seconds", 300),
+        max_batch_seconds=data.get("max_batch_seconds", 300),
     )
+    if config.max_batch_seconds < config.debounce_seconds:
+        raise ValueError(
+            "max_batch_seconds must be >= debounce_seconds "
+            f"({config.max_batch_seconds} < {config.debounce_seconds})"
+        )
+    return config
 
 
 def save(config: Config, path: Path = DEFAULT_CONFIG_PATH) -> None:
@@ -36,6 +44,7 @@ def save(config: Config, path: Path = DEFAULT_CONFIG_PATH) -> None:
         "repo": config.repo,
         "debounce_seconds": config.debounce_seconds,
         "sync_interval_seconds": config.sync_interval_seconds,
+        "max_batch_seconds": config.max_batch_seconds,
     }
     with open(path, "wb") as f:
         tomli_w.dump(data, f)

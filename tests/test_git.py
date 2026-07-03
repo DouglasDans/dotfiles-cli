@@ -3,7 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from dotfiles.git import GitError, add, clone, commit, push, pull, rm, head_hash, is_ignored
+from dotfiles.git import (
+    GitError,
+    add,
+    add_all,
+    clone,
+    commit,
+    push,
+    pull,
+    rm,
+    head_hash,
+    status_porcelain,
+)
 
 
 def _setup_repo(path: Path) -> None:
@@ -161,20 +172,96 @@ def test_head_hash_raises_on_empty_repo(tmp_path):
         head_hash(tmp_path)
 
 
-# --- is_ignored ---
+# --- status_porcelain ---
 
-def test_is_ignored_returns_true_for_gitignored_path(local_repo):
-    (local_repo / ".gitignore").write_text("ignored/\n")
+def test_status_porcelain_returns_empty_for_clean_repo(local_repo):
+    _commit_file(local_repo, "foo.txt")
+
+    assert status_porcelain(local_repo) == []
+
+
+def test_status_porcelain_lists_modified_tracked_file(local_repo):
+    _commit_file(local_repo, "foo.txt")
+    (local_repo / "foo.txt").write_text("changed")
+
+    assert status_porcelain(local_repo) == ["foo.txt"]
+
+
+def test_status_porcelain_lists_untracked_file(local_repo):
+    _commit_file(local_repo, "foo.txt")
+    (local_repo / "new.txt").write_text("x")
+
+    assert status_porcelain(local_repo) == ["new.txt"]
+
+
+def test_status_porcelain_lists_deleted_tracked_file(local_repo):
+    _commit_file(local_repo, "foo.txt")
+    (local_repo / "foo.txt").unlink()
+
+    assert status_porcelain(local_repo) == ["foo.txt"]
+
+
+def test_status_porcelain_excludes_gitignored_file(local_repo):
+    _commit_file(local_repo, ".gitignore", content="ignored/\n")
     (local_repo / "ignored").mkdir()
     (local_repo / "ignored" / "file.txt").write_text("x")
 
-    assert is_ignored(local_repo, str(local_repo / "ignored" / "file.txt"))
+    assert status_porcelain(local_repo) == []
 
 
-def test_is_ignored_returns_false_for_tracked_path(local_repo):
-    (local_repo / "foo.txt").write_text("hello")
+def test_status_porcelain_handles_path_with_spaces(local_repo):
+    _commit_file(local_repo, "foo.txt")
+    (local_repo / "my file.txt").write_text("x")
 
-    assert not is_ignored(local_repo, str(local_repo / "foo.txt"))
+    assert status_porcelain(local_repo) == ["my file.txt"]
+
+
+def test_status_porcelain_handles_staged_rename(local_repo):
+    _commit_file(local_repo, "old.txt")
+    subprocess.run(
+        ["git", "mv", "old.txt", "new.txt"], cwd=local_repo, check=True, capture_output=True
+    )
+
+    result = status_porcelain(local_repo)
+
+    assert result == ["new.txt"]
+
+
+def test_status_porcelain_raises_outside_git_repo(tmp_path):
+    with pytest.raises(GitError):
+        status_porcelain(tmp_path)
+
+
+# --- add_all ---
+
+def test_add_all_stages_new_modified_and_deleted(local_repo):
+    _commit_file(local_repo, "keep.txt")
+    _commit_file(local_repo, "gone.txt")
+    (local_repo / "keep.txt").write_text("changed")
+    (local_repo / "gone.txt").unlink()
+    # distinct content, or git detects the delete+create pair as a rename
+    (local_repo / "new.txt").write_text("something else entirely")
+
+    add_all(local_repo)
+
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"], cwd=local_repo, capture_output=True, text=True
+    )
+    staged = set(out.stdout.split())
+    assert staged == {"keep.txt", "gone.txt", "new.txt"}
+
+
+def test_add_all_respects_gitignore(local_repo):
+    _commit_file(local_repo, ".gitignore", content="ignored/\n")
+    (local_repo / "ignored").mkdir()
+    (local_repo / "ignored" / "file.txt").write_text("x")
+
+    add_all(local_repo)
+
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"], cwd=local_repo, capture_output=True, text=True
+    )
+    assert "ignored/file.txt" not in out.stdout
 
 
 # --- clone ---

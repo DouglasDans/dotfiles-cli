@@ -26,7 +26,7 @@ def _die(msg: str) -> None:
 def _load_config() -> config.Config:
     try:
         return config.load()
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         _die(str(e))
 
 

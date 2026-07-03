@@ -3,12 +3,22 @@ import os
 import signal
 import subprocess
 import threading
+import time
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
 import tomli_w
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers import Observer
 
 from dotfiles import git, linker
@@ -16,6 +26,23 @@ from dotfiles import git, linker
 _STATE_DIR = Path("~/.config/dotfiles-cli").expanduser()
 _PID_FILE = _STATE_DIR / "watcher.pid"
 _STATE_FILE = _STATE_DIR / "state.toml"
+
+# Whitelist of event types allowed into the observer queue. Read-only events
+# (opened, closed_no_write) are emitted by watchdog >= 2.3 for every file READ;
+# since every git subprocess reads the repo's own tracked gitconfig, letting
+# them through creates a self-sustaining feedback loop that grows the queue
+# without bound (observed: 9.6GB RSS, OOM kill).
+_EVENT_FILTER = [
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+]
+
+_COMMIT_MESSAGE_MAX_PATHS = 5
 
 
 def _log(msg: str) -> None:
@@ -84,30 +111,46 @@ def _links_toml_hash(repo: Path) -> bytes:
         return b""
 
 
+def _commit_message(changed: list[str]) -> str:
+    if len(changed) <= _COMMIT_MESSAGE_MAX_PATHS:
+        return f"auto: {', '.join(changed)}"
+    return f"auto: {len(changed)} files changed"
+
+
 class _DotfilesEventHandler(FileSystemEventHandler):
-    def __init__(self, repo: Path, debounce_seconds: int) -> None:
+    def __init__(self, repo: Path, debounce_seconds: int, max_batch_seconds: int = 300) -> None:
         self._repo = repo
         self._debounce_seconds = debounce_seconds
+        self._max_batch_seconds = max_batch_seconds
         self._timer: threading.Timer | None = None
-        self._pending: set[str] = set()
+        self._dirty = False
+        self._batch_started_at: float | None = None
         self._lock = threading.Lock()
         self._git_lock = threading.Lock()
 
     def on_any_event(self, event) -> None:
-        if event.is_directory:
+        paths = [
+            p
+            for p in (getattr(event, "src_path", None), getattr(event, "dest_path", None))
+            if p
+        ]
+        if not paths:
             return
-        src = getattr(event, "src_path", None)
-        if src is None:
+        if all(_is_in_git_dir(self._repo, p) for p in paths):
             return
-        if _is_in_git_dir(self._repo, src):
-            return
-        if git.is_ignored(self._repo, src):
-            return
+
         with self._lock:
-            self._pending.add(src)
+            self._dirty = True
+            now = time.monotonic()
+            if self._batch_started_at is None:
+                self._batch_started_at = now
+            # cap the debounce so a continuous event stream can never
+            # postpone the flush past max_batch_seconds
+            remaining = self._max_batch_seconds - (now - self._batch_started_at)
+            interval = max(0.0, min(float(self._debounce_seconds), remaining))
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(self._debounce_seconds, self._flush)
+            self._timer = threading.Timer(interval, self._flush)
             self._timer.daemon = True
             self._timer.start()
 
@@ -127,18 +170,24 @@ class _DotfilesEventHandler(FileSystemEventHandler):
                 _write_state({"last_error": str(e), "last_error_at": _now()})
                 return
 
+            # also retries any commit left unpushed by an earlier failed cycle
+            try:
+                git.push(repo)
+            except git.GitError as e:
+                _log(f"sync push failed: {e}")
+                _write_state({"last_error": str(e), "last_error_at": _now()})
+
         links_toml_hash_after = _links_toml_hash(repo)
         if links_toml_hash_before != links_toml_hash_after:
             linker.restore(repo, force=False)
 
     def _flush(self) -> None:
         with self._lock:
-            paths = list(self._pending)
-            self._pending.clear()
+            if not self._dirty:
+                return
+            self._dirty = False
+            self._batch_started_at = None
             self._timer = None
-
-        if not paths:
-            return
 
         repo = self._repo
 
@@ -146,23 +195,24 @@ class _DotfilesEventHandler(FileSystemEventHandler):
             _log("rebase in progress — skipping commit cycle")
             return
 
-        relative_paths: list[str] = []
-        for p in paths:
-            try:
-                relative_paths.append(str(Path(p).relative_to(repo)))
-            except ValueError:
-                pass
-
-        if not relative_paths:
-            return
-
         with self._git_lock:
+            # git decides what changed — event paths are just the trigger
             try:
-                git.add(repo, relative_paths)
-                git.commit(repo, f"auto: {', '.join(relative_paths)}")
+                changed = git.status_porcelain(repo)
+            except git.GitError as e:
+                _log(f"status failed: {e}")
+                _write_state({"last_error": str(e), "last_error_at": _now()})
+                return
+
+            if not changed:
+                return
+
+            try:
+                git.add_all(repo)
+                git.commit(repo, _commit_message(changed))
             except git.GitError as e:
                 if _is_nothing_to_commit(str(e)):
-                    _log(f"nothing to commit for {', '.join(relative_paths)}")
+                    _log("nothing to commit")
                     return
                 _log(f"commit failed: {e}")
                 _write_state({"last_error": str(e), "last_error_at": _now()})
@@ -193,10 +243,9 @@ class _DotfilesEventHandler(FileSystemEventHandler):
                 commit_hash = "unknown"
 
             _write_state({"last_commit": commit_hash, "last_commit_at": _now()})
-            _log(f"pushed {len(relative_paths)} change(s)")
+            _log(f"pushed {len(changed)} change(s)")
 
-        links_toml_in_paths = str(repo / "links.toml") in paths
-        if links_toml_in_paths or links_toml_updated_by_pull:
+        if "links.toml" in changed or links_toml_updated_by_pull:
             linker.restore(repo, force=False)
 
 
@@ -213,7 +262,9 @@ def start(cfg) -> None:
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT, _cleanup)
 
-    handler = _DotfilesEventHandler(repo, cfg.debounce_seconds)
+    handler = _DotfilesEventHandler(
+        repo, cfg.debounce_seconds, max_batch_seconds=cfg.max_batch_seconds
+    )
 
     def _schedule_sync() -> None:
         handler._sync()
@@ -224,7 +275,7 @@ def start(cfg) -> None:
     _schedule_sync()
 
     observer = Observer()
-    observer.schedule(handler, str(repo), recursive=True)
+    observer.schedule(handler, str(repo), recursive=True, event_filter=_EVENT_FILTER)
     observer.start()
 
     try:

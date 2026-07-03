@@ -1,2 +1,4 @@
 tomli-w>=1.0.0
-watchdog>=3.0.0
+# pinned to major 6: the event-type whitelist in watcher.py depends on which
+# event classes this watchdog major emits (opened/closed_no_write appeared in 2.3)
+watchdog>=6.0,<7

@@ -7,6 +7,8 @@ Type=simple
 ExecStart=/home/{user}/.local/bin/dotfiles watch
 Restart=on-failure
 RestartSec=10
+# containment: a leak must kill the service, never the machine
+MemoryMax=256M
 
 [Install]
 WantedBy=default.target

@@ -16,6 +16,29 @@ def add(repo: Path, paths: list[str]) -> None:
     _run(["git", "add", "--"] + paths, cwd=repo)
 
 
+def add_all(repo: Path) -> None:
+    _run(["git", "add", "-A"], cwd=repo)
+
+
+def status_porcelain(repo: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "-z"], cwd=repo, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise GitError(result.stderr.strip() or result.stdout.strip())
+
+    paths: list[str] = []
+    entries = iter(result.stdout.split("\0"))
+    for entry in entries:
+        if not entry:
+            continue
+        code, path = entry[:2], entry[3:]
+        paths.append(path)
+        if code[0] in ("R", "C"):
+            next(entries, None)  # renames/copies carry the original path as an extra token
+    return paths
+
+
 def commit(repo: Path, message: str) -> None:
     _run(["git", "commit", "-m", message], cwd=repo)
 
@@ -35,13 +58,6 @@ def rm(repo: Path, path: str) -> None:
 def clone(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _run(["git", "clone", url, str(dest)], cwd=dest.parent)
-
-
-def is_ignored(repo: Path, path: str) -> bool:
-    result = subprocess.run(
-        ["git", "check-ignore", "-q", "--", path], cwd=repo, capture_output=True, text=True
-    )
-    return result.returncode == 0
 
 
 def head_hash(repo: Path) -> str:
